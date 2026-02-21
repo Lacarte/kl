@@ -46,31 +46,95 @@ def is_keylogger_running():
         return False
     try:
         pid = int(PID_FILE.read_text(encoding="utf-8").strip())
-        # On Windows, signal 0 doesn't exist; use os.kill with CTRL_C_EVENT check
-        os.kill(pid, 0)
-        return True
-    except (ValueError, ProcessLookupError, PermissionError, OSError):
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD]
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return False
+    except (ValueError, OSError):
         return False
 
 
-def stop_keylogger():
-    """Terminate the keylogger process via taskkill. Returns a status message."""
-    if not PID_FILE.exists():
-        return "No keylogger PID file found — not running."
+MAIN_SCRIPT = str(BASE_DIR / "main.py")
+
+
+def _ps_query():
+    """Single PowerShell call to get all python.exe process info as CSV."""
+    import subprocess
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NoLogo", "-Command",
+         "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" "
+         "| Select-Object ProcessId,ExecutablePath,CommandLine "
+         "| ConvertTo-Csv -NoTypeInformation"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return []
+    import csv, io
+    found = []
+    base_lower = str(BASE_DIR).lower()
+    main_lower = MAIN_SCRIPT.lower()
+    my_pid = str(os.getpid())
+    for row in csv.DictReader(io.StringIO(result.stdout)):
+        pid = row.get("ProcessId", "")
+        exe = row.get("ExecutablePath", "") or ""
+        cmd = row.get("CommandLine", "") or ""
+        if pid == my_pid:
+            continue
+        cmd_lower = cmd.lower().rstrip()
+        # Match: full path to main.py in command, OR venv python + command ends with main.py
+        if main_lower in cmd_lower or (base_lower in exe.lower() and cmd_lower.endswith("main.py")):
+            found.append((pid, exe or "unknown", cmd or "unknown"))
+    return found
+
+
+def get_keylogger_status():
+    """Return a status message with PID, process name, and executable path."""
     try:
-        import subprocess, time
-        pid = int(PID_FILE.read_text(encoding="utf-8").strip())
-        result = subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", str(pid)],
-            capture_output=True, text=True,
-        )
-        time.sleep(0.5)
-        PID_FILE.unlink(missing_ok=True)
-        if result.returncode == 0:
-            return f"Keylogger (PID {pid}) stopped."
-        return f"taskkill: {result.stderr.strip() or result.stdout.strip()}"
-    except Exception as e:
-        return f"Failed to stop keylogger: {e}"
+        procs = _ps_query()
+    except Exception:
+        procs = []
+    if not procs:
+        return f"{RED}Not running{RST}"
+    lines = [f"{GREEN}{BOLD}Yes — running ({len(procs)} process{'es' if len(procs) > 1 else ''}){RST}"]
+    for pid, exe, cmd in procs:
+        lines.append(f"  PID:     {WHITE}{pid}{RST}")
+        lines.append(f"  Exe:     {WHITE}{exe}{RST}")
+        lines.append(f"  Command: {WHITE}{cmd}{RST}")
+        if len(procs) > 1:
+            lines.append("")
+    return "\n".join(lines)
+
+
+def stop_keylogger():
+    """Find and kill all keylogger processes in a single PowerShell call."""
+    import subprocess
+    main_escaped = MAIN_SCRIPT.replace("'", "''").lower()
+    base_escaped = str(BASE_DIR).replace("'", "''").lower()
+    my_pid = os.getpid()
+    # Match: full main.py path in CommandLine, OR venv python + command ends with main.py
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NoLogo", "-Command",
+         f"$p = Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" "
+         f"| Where-Object {{ $_.ProcessId -ne {my_pid} -and $_.CommandLine -and "
+         f"($_.CommandLine.ToLower().Contains('{main_escaped}') -or "
+         f"($_.ExecutablePath -and $_.ExecutablePath.ToLower().Contains('{base_escaped}') -and "
+         f"$_.CommandLine.TrimEnd().ToLower().EndsWith('main.py'))) }}; "
+         f"if ($p) {{ $p | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}; "
+         f"($p | ForEach-Object {{ $_.ProcessId }}) -join ',' }} "
+         f"else {{ 'NONE' }}"],
+        capture_output=True, text=True,
+    )
+    PID_FILE.unlink(missing_ok=True)
+    output = result.stdout.strip()
+    if not output or output == "NONE":
+        return "Keylogger is not running."
+    pids = [p.strip() for p in output.split(",") if p.strip()]
+    return f"Stopped {len(pids)} process{'es' if len(pids) > 1 else ''}: PID {', '.join(pids)}"
 
 
 def enable_virtual_terminal():
@@ -160,7 +224,7 @@ def render_date_list(dates, cursor):
         status = f"{GRAY}○ STOPPED{RST}"
 
     out.append(f"  {YELLOW}{BOLD}Select a date to view logs:{RST}    Keylogger: {status}")
-    out.append(f"  {DIM}Up/Down = navigate │ Enter = open │ X = stop keylogger │ Q = quit{RST}")
+    out.append(f"  {DIM}Up/Down = navigate │ Enter = open │ R = status │ X = stop │ Q = quit{RST}")
     out.append("")
 
     if not dates:
@@ -217,6 +281,27 @@ def show_toast(message, colour=YELLOW):
     time.sleep(1.5)
 
 
+def show_status_popup(status_text):
+    """Show a multi-line status box and wait for any key to dismiss."""
+    cols, rows = term_size()
+    lines = status_text.splitlines()
+    # draw from the middle of the screen
+    box_h = len(lines) + 4
+    start_row = max(1, (rows - box_h) // 2)
+    out = []
+    out.append(f"\033[{start_row};1H")
+    out.append(f"  {CYAN}{BOLD}{'─' * (cols - 4)}{RST}\033[K")
+    out.append(f"  {YELLOW}{BOLD} Keylogger Status{RST}\033[K")
+    out.append(f"  {CYAN}{'─' * (cols - 4)}{RST}\033[K")
+    for line in lines:
+        out.append(f"  {line}\033[K")
+    out.append(f"  {CYAN}{'─' * (cols - 4)}{RST}\033[K")
+    out.append(f"  {DIM}Press any key to dismiss{RST}\033[K")
+    sys.stdout.write("\n".join(out))
+    sys.stdout.flush()
+    read_key()
+
+
 # ── Log detail screen ────────────────────────────────────────────────────────
 
 def colour_line(line, cols):
@@ -251,7 +336,7 @@ def render_log_detail(date_str, lines, scroll, search_text=""):
     out.append("")
     out.append(
         f"  {DIM}Total: {len(lines)} entries │ "
-        f"Up/Down/PgUp/PgDn = scroll │ Backspace/Esc = back │ X = stop keylogger │ Q = quit{RST}"
+        f"Up/Down/PgUp/PgDn = scroll │ Backspace/Esc = back │ R = status │ X = stop │ Q = quit{RST}"
     )
 
     if search_text:
@@ -335,6 +420,9 @@ def _run():
             key = read_key()
             if key in ("q", "Q"):
                 return
+            elif key in ("r", "R"):
+                show_status_popup(get_keylogger_status())
+                clear()
             elif key in ("x", "X"):
                 msg = stop_keylogger()
                 show_toast(msg)
@@ -356,6 +444,9 @@ def _run():
             key = read_key()
             if key in ("q", "Q"):
                 return
+            elif key in ("r", "R"):
+                show_status_popup(get_keylogger_status())
+                clear()
             elif key in ("x", "X"):
                 msg = stop_keylogger()
                 show_toast(msg)
