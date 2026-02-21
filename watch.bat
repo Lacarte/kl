@@ -1,5 +1,4 @@
 @echo off
-title Log Viewer
 cd /d "%~dp0"
 
 if not exist "venv\Scripts\activate.bat" (
@@ -9,4 +8,4 @@ if not exist "venv\Scripts\activate.bat" (
 )
 
 call venv\Scripts\activate.bat
-python watch.py
+start "" pythonw watch.py
