@@ -272,6 +272,19 @@ def render_date_list(dates, cursor):
     sys.stdout.flush()
 
 
+def _flush_input():
+    """Drain any buffered keypresses so they don't get consumed by the next read_key()."""
+    while msvcrt.kbhit():
+        msvcrt.getwch()
+
+
+def show_busy(message="Please wait..."):
+    """Show an instant one-line indicator at the bottom of the screen."""
+    cols, rows = term_size()
+    sys.stdout.write(f"\033[{rows};1H  {YELLOW}{BOLD}{message}{RST}\033[K")
+    sys.stdout.flush()
+
+
 def show_toast(message, colour=YELLOW):
     """Flash a one-line message at the bottom of the screen for 1.5s."""
     cols, rows = term_size()
@@ -283,6 +296,7 @@ def show_toast(message, colour=YELLOW):
 
 def show_status_popup(status_text):
     """Show a multi-line status box and wait for any key to dismiss."""
+    _flush_input()
     cols, rows = term_size()
     lines = status_text.splitlines()
     # draw from the middle of the screen
@@ -421,9 +435,11 @@ def _run():
             if key in ("q", "Q"):
                 return
             elif key in ("r", "R"):
+                show_busy("Checking status...")
                 show_status_popup(get_keylogger_status())
                 clear()
             elif key in ("x", "X"):
+                show_busy("Stopping keylogger...")
                 msg = stop_keylogger()
                 show_toast(msg)
             elif key == "up" or key in ("k", "K"):
@@ -445,9 +461,11 @@ def _run():
             if key in ("q", "Q"):
                 return
             elif key in ("r", "R"):
+                show_busy("Checking status...")
                 show_status_popup(get_keylogger_status())
                 clear()
             elif key in ("x", "X"):
+                show_busy("Stopping keylogger...")
                 msg = stop_keylogger()
                 show_toast(msg)
             elif key in ("backspace", "esc"):
