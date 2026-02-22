@@ -281,6 +281,7 @@ C_ERROR = "#f38ba8"
 C_OTHER = "#6c7086"
 C_TIME = "#f9e2af"
 C_WINDOW = "#cba6f7"
+C_TEXT = "#fab387"
 
 
 # ── Log syntax highlighter ────────────────────────────────────────────────────
@@ -308,7 +309,10 @@ class LogHighlighter(QSyntaxHighlighter):
         # entry
         e_start = w_end + 1
         fmt_e = QTextCharFormat()
-        if "Shortcut:" in entry:
+        if "Text:" in entry:
+            fmt_e.setForeground(QColor(C_TEXT))
+            fmt_e.setFontWeight(700)
+        elif "Shortcut:" in entry:
             fmt_e.setForeground(QColor(C_SHORTCUT))
         elif "Enter key" in entry:
             fmt_e.setForeground(QColor(C_ENTER))

