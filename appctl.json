@@ -1,0 +1,16 @@
+{
+  "appctl": 1,
+  "id": "keylogger",
+  "name": "KL-RUNNER",
+  "description": "Personal keystroke-and-window logger (main.py). Writes one plain-text log per day in logs\\. Stops cleanly on Ctrl+C.",
+  "kind": "console",
+  "start": { "command": ["cmd.exe", "/c", "{app}\\runner.bat"] },
+  "match": [
+    { "exe": "{app}\\*" },
+    { "cmdline": "{app}\\runner.bat" }
+  ],
+  "stop": { "method": "ctrl_c", "timeout": 10 },
+  "autostart": true,
+  "restart": "always",
+  "logs": "{app}\\logs\\*.log"
+}
